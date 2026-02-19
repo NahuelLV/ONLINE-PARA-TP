@@ -4,9 +4,12 @@ public class MainServidorLAN {
 
     public static void main(String[] args) {
 
-        ServidorIronfallLAN server = new ServidorIronfallLAN();
+        System.out.println("[SERVER] Ironfall LAN escuchando en puerto " + ServidorOnline.PORT);
+        System.out.println("[SERVER] Servidor Ironfall LAN iniciado...");
+
+        ServidorOnline server = new ServidorOnline();
         server.start();
 
-        System.out.println("Servidor Ironfall LAN iniciado...");
+        Runtime.getRuntime().addShutdownHook(new Thread(server::cerrar));
     }
 }

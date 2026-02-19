@@ -16,6 +16,11 @@ dependencies {
 
 sourceSets {
     main {
+        // FORZAMOS a Gradle a compilar src/main/java sí o sí
+        java.srcDirs = ["src/main/java"]
+
+        // Tus assets (esto estaba bien)
         resources.srcDirs = ["../ironfall-core/assets"]
     }
+
 }
