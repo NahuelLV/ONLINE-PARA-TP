@@ -26,10 +26,12 @@ public class EstatuaServidor {
 
     private int oro = 0;
     private float timerOro = 0f;
-    private static final float INTERVALO_ORO = 30f;
+
+    // ✅ cada 15 segundos
+    private static final float INTERVALO_ORO = 15f;
     private static final int ORO_POR_TICK = 500;
 
-    private List<TipoUnidad> colaProduccion = new LinkedList<>();
+    private final List<TipoUnidad> colaProduccion = new LinkedList<>();
     private TipoUnidad produciendo = null;
     private float progresoProduccion = 0f;
 
@@ -42,7 +44,6 @@ public class EstatuaServidor {
     public void update(float delta, List<UnidadServidor> enemigos) {
         if (!viva) return;
 
-        // ✅ ahora el flag funciona
         if (generarOroHabilitado) generarOro(delta);
 
         tiempoDesdeUltimoAtaque += delta;
@@ -64,11 +65,12 @@ public class EstatuaServidor {
         }
     }
 
+    // ✅ robusto: si delta viene grande, no “pierde” ticks
     private void generarOro(float delta) {
         timerOro += delta;
-        if (timerOro >= INTERVALO_ORO) {
+        while (timerOro >= INTERVALO_ORO) {
             oro += ORO_POR_TICK;
-            timerOro = 0f;
+            timerOro -= INTERVALO_ORO;
         }
     }
 
@@ -100,10 +102,7 @@ public class EstatuaServidor {
         float spawnY = y;
 
         UnidadServidor nueva = CreacionUnidades.crearUnidad(
-                produciendo,
-                spawnX,
-                spawnY,
-                equipo
+                produciendo, spawnX, spawnY, equipo
         );
 
         produciendo = null;

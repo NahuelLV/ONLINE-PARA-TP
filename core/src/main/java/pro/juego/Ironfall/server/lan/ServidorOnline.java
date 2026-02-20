@@ -12,6 +12,9 @@ public class ServidorOnline extends Thread {
 
     public static final int PORT = 4321;
 
+    private static final float FIXED_DT = 0.05f; // 20 TPS
+    private float accumulator = 0f;
+
     private DatagramSocket socket;
     private volatile boolean fin = false;
 
@@ -22,9 +25,8 @@ public class ServidorOnline extends Thread {
 
     // ✅ Sync oro periódico (aunque nadie spawnee)
     private float timerSyncOro = 0f;
-    private static final float INTERVALO_SYNC_ORO = 0.5f; // 2 veces por segundo (suficiente)
+    private static final float INTERVALO_SYNC_ORO = 0.5f; // 2 veces por segundo
 
-    // ✅ Oro inicial para test (si no querés, ponelo en 0)
     private static final int ORO_INICIAL_TEST = 500;
 
     public ServidorOnline() {
@@ -46,29 +48,34 @@ public class ServidorOnline extends Thread {
     public void run() {
         if (fin) return;
 
-        long lastTick = System.nanoTime();
+        long lastTime = System.nanoTime();
 
         while (!fin) {
 
             // ======================
-            // TICK LÓGICO 20 TPS
+            // ✅ TICK LÓGICO REAL (con acumulador)
             // ======================
             long now = System.nanoTime();
-            float delta = (now - lastTick) / 1_000_000_000f;
+            float frameDelta = (now - lastTime) / 1_000_000_000f;
+            lastTime = now;
 
-            if (delta >= 0.05f) {
-                lastTick = now;
+            // (evita explosiones si el server se freezea)
+            if (frameDelta > 0.25f) frameDelta = 0.25f;
 
-                if (partidaIniciada) {
-                    gameState.update(0.05f);
+            if (partidaIniciada) {
+                accumulator += frameDelta;
 
-                    // sync oro periódico
-                    timerSyncOro += 0.05f;
+                while (accumulator >= FIXED_DT) {
+                    gameState.update(FIXED_DT);
+
+                    timerSyncOro += FIXED_DT;
                     if (timerSyncOro >= INTERVALO_SYNC_ORO) {
                         timerSyncOro = 0f;
                         enviarATodos("ORO:0:" + gameState.getEstatua0().getOro());
                         enviarATodos("ORO:1:" + gameState.getEstatua1().getOro());
                     }
+
+                    accumulator -= FIXED_DT;
                 }
             }
 
@@ -79,7 +86,8 @@ public class ServidorOnline extends Thread {
                 byte[] buffer = new byte[2048];
                 DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
 
-                socket.setSoTimeout(200);
+                // ✅ timeout chico para no frenar el tick
+                socket.setSoTimeout(20);
                 socket.receive(dp);
 
                 String msg = new String(dp.getData(), 0, dp.getLength()).trim();
@@ -138,17 +146,15 @@ public class ServidorOnline extends Thread {
                         continue;
                     }
 
-                    // ✅ ambos aplican el mismo spawn
                     enviarATodos("SPAWN_OK:" + emisor.equipo + ":" + tipo.name());
 
-                    // ✅ sync oro inmediato (además del periódico)
+                    // sync oro inmediato también
                     enviarATodos("ORO:0:" + gameState.getEstatua0().getOro());
                     enviarATodos("ORO:1:" + gameState.getEstatua1().getOro());
 
                     continue;
                 }
 
-                // default
                 enviar("ACK:" + msg, dp.getAddress(), dp.getPort());
 
             } catch (SocketTimeoutException ignored) {
@@ -184,14 +190,12 @@ public class ServidorOnline extends Thread {
         if (clientes.size() == 2 && !partidaIniciada) {
             partidaIniciada = true;
 
-            // ✅ oro inicial para test
             gameState.getEstatua0().setOro(ORO_INICIAL_TEST);
             gameState.getEstatua1().setOro(ORO_INICIAL_TEST);
 
             System.out.println("[SERVER] START -> ambos");
             enviarATodos("START");
 
-            // ✅ snapshot oro inicial
             enviarATodos("ORO:0:" + gameState.getEstatua0().getOro());
             enviarATodos("ORO:1:" + gameState.getEstatua1().getOro());
 
