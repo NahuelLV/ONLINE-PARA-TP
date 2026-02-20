@@ -6,6 +6,7 @@ import pro.juego.Ironfall.server.GameStateServidor;
 import java.io.IOException;
 import java.net.*;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
 
 public class ServidorOnline extends Thread {
@@ -21,13 +22,22 @@ public class ServidorOnline extends Thread {
     private final Map<String, Cliente> clientes = new HashMap<>(2);
     private boolean partidaIniciada = false;
 
-    private final GameStateServidor gameState = new GameStateServidor();
+    // ❗ ya NO final porque vamos a resetear
+    private GameStateServidor gameState = new GameStateServidor();
 
-    // ✅ Sync oro periódico (aunque nadie spawnee)
+    // Sync oro periódico
     private float timerSyncOro = 0f;
-    private static final float INTERVALO_SYNC_ORO = 0.5f; // 2 veces por segundo
+    private static final float INTERVALO_SYNC_ORO = 0.5f;
 
     private static final int ORO_INICIAL_TEST = 500;
+
+    // ✅ limpieza por timeout
+    private static final long CLIENT_TIMEOUT_MS = 15000;
+
+    // ✅ game over (repetimos mensaje por UDP)
+    private boolean gameOverEnProceso = false;
+    private float timerGameOver = 0f;
+    private static final float DURACION_REENVIO_GAME_OVER = 1.0f; // 1s reenviando
 
     public ServidorOnline() {
         setName("ServidorOnlineThread");
@@ -53,26 +63,49 @@ public class ServidorOnline extends Thread {
         while (!fin) {
 
             // ======================
-            // ✅ TICK LÓGICO REAL (con acumulador)
+            // TICK LÓGICO REAL
             // ======================
             long now = System.nanoTime();
             float frameDelta = (now - lastTime) / 1_000_000_000f;
             lastTime = now;
 
-            // (evita explosiones si el server se freezea)
             if (frameDelta > 0.25f) frameDelta = 0.25f;
+
+            // limpiar clientes colgados (crash / cierre sin DISCONNECT)
+            limpiarClientesPorTimeout();
 
             if (partidaIniciada) {
                 accumulator += frameDelta;
 
                 while (accumulator >= FIXED_DT) {
+
+                    // si ya estamos en game over, solo reenviamos y reseteamos
+                    if (gameOverEnProceso) {
+                        tickGameOver(FIXED_DT);
+                        accumulator -= FIXED_DT;
+                        continue;
+                    }
+
                     gameState.update(FIXED_DT);
 
+                    // oro sync
                     timerSyncOro += FIXED_DT;
                     if (timerSyncOro >= INTERVALO_SYNC_ORO) {
                         timerSyncOro = 0f;
                         enviarATodos("ORO:0:" + gameState.getEstatua0().getOro());
                         enviarATodos("ORO:1:" + gameState.getEstatua1().getOro());
+                    }
+
+                    // ✅ detecta fin y arranca proceso
+                    if (gameState.estaTerminado()) {
+                        gameOverEnProceso = true;
+                        timerGameOver = 0f;
+
+                        int ganador = gameState.getGanador();
+                        System.out.println("[SERVER] GAME OVER! Ganador=" + ganador);
+
+                        // primer envío inmediato
+                        enviarATodos("GAME_OVER:" + ganador);
                     }
 
                     accumulator -= FIXED_DT;
@@ -86,12 +119,15 @@ public class ServidorOnline extends Thread {
                 byte[] buffer = new byte[2048];
                 DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
 
-                // ✅ timeout chico para no frenar el tick
                 socket.setSoTimeout(20);
                 socket.receive(dp);
 
                 String msg = new String(dp.getData(), 0, dp.getLength()).trim();
                 String key = key(dp.getAddress(), dp.getPort());
+
+                // actualizar lastSeen si está registrado
+                Cliente cReg = clientes.get(key);
+                if (cReg != null) cReg.lastSeenMs = System.currentTimeMillis();
 
                 System.out.println("[SERVER] RX " + key + " -> '" + msg + "'");
 
@@ -110,6 +146,12 @@ public class ServidorOnline extends Thread {
                     continue;
                 }
 
+                // ✅ el cliente avisa que se va
+                if (msg.equals("DISCONNECT")) {
+                    desconectar(key);
+                    continue;
+                }
+
                 Cliente emisor = clientes.get(key);
                 if (emisor == null) {
                     enviar("NO_CONECTADO", dp.getAddress(), dp.getPort());
@@ -121,11 +163,13 @@ public class ServidorOnline extends Thread {
                     continue;
                 }
 
-                // =========================
+                // si estamos en game over, ignoramos spawns (la partida ya terminó)
+                if (gameOverEnProceso) {
+                    enviar("ACK:GAME_OVER", dp.getAddress(), dp.getPort());
+                    continue;
+                }
+
                 // SPAWN
-                // OK:   SPAWN_OK:<equipo>:<tipo>
-                // FAIL: SPAWN_FAIL:<motivo>
-                // =========================
                 if (msg.startsWith("SPAWN:")) {
                     String t = msg.substring("SPAWN:".length()).trim();
 
@@ -148,23 +192,51 @@ public class ServidorOnline extends Thread {
 
                     enviarATodos("SPAWN_OK:" + emisor.equipo + ":" + tipo.name());
 
-                    // sync oro inmediato también
+                    // sync oro inmediato
                     enviarATodos("ORO:0:" + gameState.getEstatua0().getOro());
                     enviarATodos("ORO:1:" + gameState.getEstatua1().getOro());
-
                     continue;
                 }
 
                 enviar("ACK:" + msg, dp.getAddress(), dp.getPort());
 
             } catch (SocketTimeoutException ignored) {
-                // normal
             } catch (IOException e) {
                 if (!fin) e.printStackTrace();
             }
         }
 
         System.out.println("[SERVER] Cerrado.");
+    }
+
+    private void tickGameOver(float dt) {
+        timerGameOver += dt;
+
+        // reenviamos GAME_OVER durante 1s para que UDP no lo pierda
+        if (timerGameOver <= DURACION_REENVIO_GAME_OVER) {
+            int ganador = gameState.getGanador();
+            enviarATodos("GAME_OVER:" + ganador);
+            return;
+        }
+
+        // ✅ después reseteamos todo
+        resetearPartida();
+    }
+
+    private void resetearPartida() {
+        System.out.println("[SERVER] Reseteando partida y liberando clientes...");
+
+        partidaIniciada = false;
+        gameOverEnProceso = false;
+        timerGameOver = 0f;
+        accumulator = 0f;
+        timerSyncOro = 0f;
+
+        // liberar clientes para que puedan reconectar
+        clientes.clear();
+
+        // nuevo estado
+        gameState = new GameStateServidor();
     }
 
     private void conectar(DatagramPacket dp) {
@@ -198,9 +270,40 @@ public class ServidorOnline extends Thread {
 
             enviarATodos("ORO:0:" + gameState.getEstatua0().getOro());
             enviarATodos("ORO:1:" + gameState.getEstatua1().getOro());
-
         } else {
             enviar("ESPERANDO_RIVAL", c.ip, c.puerto);
+        }
+    }
+
+    private void desconectar(String key) {
+        Cliente c = clientes.remove(key);
+        System.out.println("[SERVER] DISCONNECT " + key + " -> removido=" + (c != null));
+
+        // si alguien se fue, paramos la partida y reseteamos para evitar estados raros
+        if (partidaIniciada) {
+            resetearPartida();
+        }
+    }
+
+    private void limpiarClientesPorTimeout() {
+        if (clientes.isEmpty()) return;
+
+        long now = System.currentTimeMillis();
+        boolean removioAlguien = false;
+
+        Iterator<Map.Entry<String, Cliente>> it = clientes.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<String, Cliente> e = it.next();
+            Cliente c = e.getValue();
+            if (now - c.lastSeenMs > CLIENT_TIMEOUT_MS) {
+                System.out.println("[SERVER] TIMEOUT cliente " + e.getKey() + " -> removido");
+                it.remove();
+                removioAlguien = true;
+            }
+        }
+
+        if (removioAlguien && partidaIniciada) {
+            resetearPartida();
         }
     }
 
@@ -215,7 +318,7 @@ public class ServidorOnline extends Thread {
             byte[] data = msg.getBytes();
             DatagramPacket out = new DatagramPacket(data, data.length, ip, port);
             socket.send(out);
-            System.out.println("[SERVER] TX " + ip.getHostAddress() + ":" + port + " <- '" + msg + "'");
+            // System.out.println("[SERVER] TX " + ip.getHostAddress() + ":" + port + " <- '" + msg + "'");
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -235,11 +338,13 @@ public class ServidorOnline extends Thread {
         InetAddress ip;
         int puerto;
         int equipo;
+        long lastSeenMs;
 
         Cliente(InetAddress ip, int puerto, int equipo) {
             this.ip = ip;
             this.puerto = puerto;
             this.equipo = equipo;
+            this.lastSeenMs = System.currentTimeMillis();
         }
     }
 }
