@@ -20,7 +20,7 @@ public class GameStateServidor {
 
     public GameStateServidor() {
         // ✅ IGUAL que el cliente
-        float yEstatua = 220f;
+        float yEstatua = 75f;
         estatua0 = new EstatuaServidor(150f, yEstatua, 0);
         estatua1 = new EstatuaServidor(2850f, yEstatua, 1);
 
