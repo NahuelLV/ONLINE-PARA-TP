@@ -20,6 +20,13 @@ public class ServidorOnline extends Thread {
 
     private final GameStateServidor gameState = new GameStateServidor();
 
+    // ✅ Sync oro periódico (aunque nadie spawnee)
+    private float timerSyncOro = 0f;
+    private static final float INTERVALO_SYNC_ORO = 0.5f; // 2 veces por segundo (suficiente)
+
+    // ✅ Oro inicial para test (si no querés, ponelo en 0)
+    private static final int ORO_INICIAL_TEST = 500;
+
     public ServidorOnline() {
         setName("ServidorOnlineThread");
         setDaemon(false);
@@ -43,16 +50,31 @@ public class ServidorOnline extends Thread {
 
         while (!fin) {
 
-            // tick lógico simple (20 TPS)
+            // ======================
+            // TICK LÓGICO 20 TPS
+            // ======================
             long now = System.nanoTime();
             float delta = (now - lastTick) / 1_000_000_000f;
+
             if (delta >= 0.05f) {
                 lastTick = now;
+
                 if (partidaIniciada) {
                     gameState.update(0.05f);
+
+                    // sync oro periódico
+                    timerSyncOro += 0.05f;
+                    if (timerSyncOro >= INTERVALO_SYNC_ORO) {
+                        timerSyncOro = 0f;
+                        enviarATodos("ORO:0:" + gameState.getEstatua0().getOro());
+                        enviarATodos("ORO:1:" + gameState.getEstatua1().getOro());
+                    }
                 }
             }
 
+            // ======================
+            // RED RX
+            // ======================
             try {
                 byte[] buffer = new byte[2048];
                 DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
@@ -91,25 +113,38 @@ public class ServidorOnline extends Thread {
                     continue;
                 }
 
-                // Pedido de spawn
+                // =========================
+                // SPAWN
+                // OK:   SPAWN_OK:<equipo>:<tipo>
+                // FAIL: SPAWN_FAIL:<motivo>
+                // =========================
                 if (msg.startsWith("SPAWN:")) {
                     String t = msg.substring("SPAWN:".length()).trim();
+
+                    TipoUnidad tipo;
                     try {
-                        TipoUnidad tipo = TipoUnidad.valueOf(t);
-
-                        if (emisor.equipo == 0) gameState.getEstatua0().intentarProducir(tipo);
-                        else gameState.getEstatua1().intentarProducir(tipo);
-
-                        Cliente otro = obtenerOtro(emisor);
-                        if (otro != null) {
-                            enviar("RIVAL_SPAWN:" + tipo.name(), otro.ip, otro.puerto);
-                        }
-
-                        enviar("OK", emisor.ip, emisor.puerto);
-
+                        tipo = TipoUnidad.valueOf(t);
                     } catch (IllegalArgumentException ex) {
-                        enviar("ERROR:TipoUnidad invalido", emisor.ip, emisor.puerto);
+                        enviar("SPAWN_FAIL:TipoUnidad invalido", emisor.ip, emisor.puerto);
+                        continue;
                     }
+
+                    boolean ok;
+                    if (emisor.equipo == 0) ok = gameState.getEstatua0().intentarProducir(tipo);
+                    else ok = gameState.getEstatua1().intentarProducir(tipo);
+
+                    if (!ok) {
+                        enviar("SPAWN_FAIL:Sin oro", emisor.ip, emisor.puerto);
+                        continue;
+                    }
+
+                    // ✅ ambos aplican el mismo spawn
+                    enviarATodos("SPAWN_OK:" + emisor.equipo + ":" + tipo.name());
+
+                    // ✅ sync oro inmediato (además del periódico)
+                    enviarATodos("ORO:0:" + gameState.getEstatua0().getOro());
+                    enviarATodos("ORO:1:" + gameState.getEstatua1().getOro());
+
                     continue;
                 }
 
@@ -135,7 +170,6 @@ public class ServidorOnline extends Thread {
 
         String key = key(dp.getAddress(), dp.getPort());
         if (clientes.containsKey(key)) {
-            // ya estaba
             enviar("OK", dp.getAddress(), dp.getPort());
             return;
         }
@@ -149,20 +183,27 @@ public class ServidorOnline extends Thread {
 
         if (clientes.size() == 2 && !partidaIniciada) {
             partidaIniciada = true;
+
+            // ✅ oro inicial para test
+            gameState.getEstatua0().setOro(ORO_INICIAL_TEST);
+            gameState.getEstatua1().setOro(ORO_INICIAL_TEST);
+
             System.out.println("[SERVER] START -> ambos");
-            for (Cliente cli : clientes.values()) {
-                enviar("START", cli.ip, cli.puerto);
-            }
+            enviarATodos("START");
+
+            // ✅ snapshot oro inicial
+            enviarATodos("ORO:0:" + gameState.getEstatua0().getOro());
+            enviarATodos("ORO:1:" + gameState.getEstatua1().getOro());
+
         } else {
             enviar("ESPERANDO_RIVAL", c.ip, c.puerto);
         }
     }
 
-    private Cliente obtenerOtro(Cliente emisor) {
+    private void enviarATodos(String msg) {
         for (Cliente c : clientes.values()) {
-            if (c != emisor) return c;
+            enviar(msg, c.ip, c.puerto);
         }
-        return null;
     }
 
     private void enviar(String msg, InetAddress ip, int port) {

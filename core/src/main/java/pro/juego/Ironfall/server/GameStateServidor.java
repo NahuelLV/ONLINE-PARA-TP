@@ -19,27 +19,28 @@ public class GameStateServidor {
     private int ganador = -1;
 
     public GameStateServidor() {
-        // Ajustá posiciones si querés
-        estatua0 = new EstatuaServidor(100, 200, 0);
-        estatua1 = new EstatuaServidor(900, 200, 1);
+        // ✅ IGUAL que el cliente
+        float yEstatua = 220f;
+        estatua0 = new EstatuaServidor(150f, yEstatua, 0);
+        estatua1 = new EstatuaServidor(2850f, yEstatua, 1);
+
+        // ✅ oro inicial para que puedan spawnear al toque
+        estatua0.setOro(500);
+        estatua1.setOro(500);
     }
 
     public void update(float delta) {
-
         if (juegoTerminado) return;
 
-        // estatuas atacan y generan oro
         estatua0.update(delta, unidadesEquipo1);
         estatua1.update(delta, unidadesEquipo0);
 
-        // producción
         UnidadServidor nueva0 = estatua0.updateProduccion(delta);
         if (nueva0 != null) unidadesEquipo0.add(nueva0);
 
         UnidadServidor nueva1 = estatua1.updateProduccion(delta);
         if (nueva1 != null) unidadesEquipo1.add(nueva1);
 
-        // unidades
         for (UnidadServidor u : unidadesEquipo0) {
             u.update(delta, unidadesEquipo1, estatua1);
         }
@@ -61,14 +62,8 @@ public class GameStateServidor {
     }
 
     private void verificarVictoria() {
-        if (!estatua0.estaViva()) {
-            juegoTerminado = true;
-            ganador = 1;
-        }
-        if (!estatua1.estaViva()) {
-            juegoTerminado = true;
-            ganador = 0;
-        }
+        if (!estatua0.estaViva()) { juegoTerminado = true; ganador = 1; }
+        if (!estatua1.estaViva()) { juegoTerminado = true; ganador = 0; }
     }
 
     public boolean estaTerminado() { return juegoTerminado; }
